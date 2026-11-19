@@ -1,6 +1,8 @@
 package com.andesstay.audit.service;
 
 import com.andesstay.audit.dto.ReservationStreamEvent;
+import com.andesstay.audit.entity.AuditLogEntity;
+import com.andesstay.audit.repository.AuditLogRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,17 +12,18 @@ import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 @Service
 public class AuditKafkaConsumerService {
 
     private static final Logger log = LoggerFactory.getLogger(AuditKafkaConsumerService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final List<ReservationStreamEvent> auditHistory = new CopyOnWriteArrayList<>();
+    private final AuditLogRepository auditLogRepository;
+
+    public AuditKafkaConsumerService(AuditLogRepository auditLogRepository) {
+        this.auditLogRepository = auditLogRepository;
+    }
 
     @KafkaListener(topics = "andesstay-auditoria-eventos", groupId = "cg-andesstay-auditoria")
     public void consumeAuditEvent(
@@ -40,9 +43,11 @@ public class AuditKafkaConsumerService {
                 return;
             }
 
-            auditHistory.add(0, event); // Agrega al inicio para ver el mas reciente primero
-            log.info("[AUDIT-CONSUMER] Evento procesado | Partition: {} | Offset: {} | Tipo: {} | Reserva ID: {}",
-                    partition, offset, event.getEventType(), event.getReservationId());
+            AuditLogEntity entity = toEntity(event);
+            auditLogRepository.save(entity);
+
+            log.info("[AUDIT-CONSUMER] Evento guardado en MySQL | ID: {} | Partition: {} | Offset: {} | Tipo: {} | Reserva ID: {}",
+                    entity.getId(), partition, offset, event.getEventType(), event.getReservationId());
 
         } catch (Exception e) {
             log.error("[AUDIT-ERROR] Error al procesar mensaje en particion {} offset {}: {}. Payload: {}",
@@ -51,6 +56,37 @@ public class AuditKafkaConsumerService {
     }
 
     public List<ReservationStreamEvent> getAllAuditLogs() {
-        return new ArrayList<>(auditHistory);
+        return auditLogRepository.findAllByOrderByIdDesc()
+                .stream()
+                .map(this::toDto)
+                .toList();
+    }
+
+    private AuditLogEntity toEntity(ReservationStreamEvent event) {
+        AuditLogEntity entity = new AuditLogEntity();
+        entity.setEventId(event.getEventId());
+        entity.setEventType(event.getEventType());
+        entity.setReservationId(event.getReservationId());
+        entity.setGuestName(event.getGuestName());
+        entity.setRoomType(event.getRoomType());
+        entity.setStatus(event.getStatus());
+        entity.setPerformedBy(event.getPerformedBy());
+        entity.setTimestamp(event.getTimestamp());
+        entity.setDetails(event.getDetails());
+        return entity;
+    }
+
+    private ReservationStreamEvent toDto(AuditLogEntity entity) {
+        ReservationStreamEvent dto = new ReservationStreamEvent();
+        dto.setEventId(entity.getEventId());
+        dto.setEventType(entity.getEventType());
+        dto.setReservationId(entity.getReservationId());
+        dto.setGuestName(entity.getGuestName());
+        dto.setRoomType(entity.getRoomType());
+        dto.setStatus(entity.getStatus());
+        dto.setPerformedBy(entity.getPerformedBy());
+        dto.setTimestamp(entity.getTimestamp());
+        dto.setDetails(entity.getDetails());
+        return dto;
     }
 }
