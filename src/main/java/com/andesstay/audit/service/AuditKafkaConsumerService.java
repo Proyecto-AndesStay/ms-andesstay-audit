@@ -6,7 +6,9 @@ import com.andesstay.audit.repository.AuditLogRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.kafka.annotation.DltHandler;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.annotation.RetryableTopic;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
@@ -25,22 +27,28 @@ public class AuditKafkaConsumerService {
         this.auditLogRepository = auditLogRepository;
     }
 
+    @RetryableTopic(
+            attempts = "3",
+            dltTopicSuffix = ".DLT",
+            numPartitions = "3",
+            replicationFactor = "3"
+    )
     @KafkaListener(topics = "andesstay-auditoria-eventos", groupId = "cg-andesstay-auditoria")
     public void consumeAuditEvent(
             @Payload String rawMessage,
             @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
             @Header(KafkaHeaders.OFFSET) long offset) {
-        try {
-            if (rawMessage == null || rawMessage.isBlank()) {
-                log.warn("[AUDIT-WARN] Mensaje vacio descartado en particion {} offset {}", partition, offset);
-                return;
-            }
+        if (rawMessage == null || rawMessage.isBlank()) {
+            log.warn("[AUDIT-WARN] Mensaje vacio descartado en particion {} offset {}", partition, offset);
+            return;
+        }
 
+        try {
             ReservationStreamEvent event = objectMapper.readValue(rawMessage, ReservationStreamEvent.class);
 
-            if (event.getEventType() == null) {
-                log.warn("[AUDIT-WARN] Evento sin eventType descartado: {}", rawMessage);
-                return;
+            if (event.getEventType() == null || event.getEventType().isBlank()) {
+                log.warn("[AUDIT-WARN] Evento sin eventType en particion {} offset {}: {}", partition, offset, rawMessage);
+                throw new IllegalArgumentException("El evento de auditoria no contiene eventType");
             }
 
             AuditLogEntity entity = toEntity(event);
@@ -49,10 +57,23 @@ public class AuditKafkaConsumerService {
             log.info("[AUDIT-CONSUMER] Evento guardado en MySQL | ID: {} | Partition: {} | Offset: {} | Tipo: {} | Reserva ID: {}",
                     entity.getId(), partition, offset, event.getEventType(), event.getReservationId());
 
+        } catch (IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             log.error("[AUDIT-ERROR] Error al procesar mensaje en particion {} offset {}: {}. Payload: {}",
                     partition, offset, e.getMessage(), rawMessage);
+            throw new IllegalArgumentException("Error al procesar evento de auditoria: " + e.getMessage(), e);
         }
+    }
+
+    @DltHandler
+    public void handleDlt(
+            @Payload String rawMessage,
+            @Header(KafkaHeaders.RECEIVED_TOPIC) String topic,
+            @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,
+            @Header(KafkaHeaders.OFFSET) long offset) {
+        log.error("[AUDIT-DLT] Mensaje derivado a DLT | Topic: {} | Partition: {} | Offset: {} | Payload: {}",
+                topic, partition, offset, rawMessage);
     }
 
     public List<ReservationStreamEvent> getAllAuditLogs() {

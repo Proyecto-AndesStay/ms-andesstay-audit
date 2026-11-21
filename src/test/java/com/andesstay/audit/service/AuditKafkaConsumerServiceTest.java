@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class AuditKafkaConsumerServiceTest {
 
@@ -77,5 +78,41 @@ class AuditKafkaConsumerServiceTest {
         assertEquals(1, logs.size());
         assertEquals("RESERVATION_CREATED", logs.get(0).getEventType());
         assertEquals(100L, logs.get(0).getReservationId());
+    }
+
+    @Test
+    void shouldIgnoreBlankMessage() {
+        AuditKafkaConsumerService service = new AuditKafkaConsumerService(inMemoryRepository());
+
+        service.consumeAuditEvent("   ", 0, 2L);
+
+        assertEquals(0, service.getAllAuditLogs().size());
+    }
+
+    @Test
+    void shouldThrowExceptionOnInvalidJson() {
+        AuditKafkaConsumerService service = new AuditKafkaConsumerService(inMemoryRepository());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.consumeAuditEvent("{json-invalido", 0, 3L));
+
+        assertEquals(0, service.getAllAuditLogs().size());
+    }
+
+    @Test
+    void shouldThrowExceptionWhenEventTypeIsMissing() {
+        AuditKafkaConsumerService service = new AuditKafkaConsumerService(inMemoryRepository());
+        String payload = """
+                {
+                  "eventId": "evt-2",
+                  "reservationId": 101,
+                  "guestName": "Sin Tipo"
+                }
+                """;
+
+        assertThrows(IllegalArgumentException.class,
+                () -> service.consumeAuditEvent(payload, 0, 4L));
+
+        assertEquals(0, service.getAllAuditLogs().size());
     }
 }
